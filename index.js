@@ -78,7 +78,8 @@ async function getEliteToken(mint) {
             const sells5m = bestPair.txns?.m5?.sells || 0;
             const vol5m = bestPair.volume?.m5 ? Math.round(bestPair.volume.m5) : 0;
 
-            if (vol5m < 1000 || buys5m <= sells5m) {
+            // 🛡️ التعديل هنا: منع العملات التي ليس لها مبيعات نهائياً (Sells = 0) أو التي توقف البيع لتجنب مصايد الهاني بوت
+            if (vol5m < 1000 || sells5m === 0 || buys5m <= sells5m) {
                 return { ignore: true };
             }
 
@@ -169,7 +170,6 @@ app.post('/webhook', async (req, res) => {
 
             sentTokensCache.set(targetMint, now);
 
-            // الرسالة بالشكل النظيف وبالترتيب الدقيق الذي طلبته تماماً:
             let msg = `💎 <b>نخبة الفرص (Elite Alpha):</b> ${tokenData.name} ($${tokenData.symbol}) - السعر: <code>${tokenData.priceUsd}</code>\n`;
             msg += `🪙 <b>العقد:</b>\n<code>${targetMint}</code>\n`;
             msg += `🛡 <b>أمانها:</b> ${tokenData.securityText} (السيولة: ${tokenData.liquidity})\n`;
@@ -203,3 +203,4 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });
+
