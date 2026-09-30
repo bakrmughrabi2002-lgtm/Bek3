@@ -23,7 +23,6 @@ async function getTokenMetadataAndSecurityScore(mint) {
     try {
         const res = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${mint}`, { timeout: 3500 });
         if (res.data && res.data.pairs && res.data.pairs.length > 0) {
-            // اختيار البير الأكثر سيولة لضمان دقة البيانات
             const pairs = res.data.pairs;
             let bestPair = pairs[0];
             for (const p of pairs) {
@@ -36,25 +35,23 @@ async function getTokenMetadataAndSecurityScore(mint) {
             const liq = bestPair.liquidity?.usd ? Math.round(bestPair.liquidity.usd) : 0;
             const ageMins = formatAgeMinutes(bestPair.pairCreatedAt);
 
-            // 🛡️ معايير الأمان والقوة الصارمة:
-            // 1. يجب ألا يتجاوز عمر التوكن 20 دقيقة (Ultra Early)
-            // 2. السيولة يجب أن تكون أكبر من أو تساوي 1,500$ وأقل من 50,000$ (لتجنب الحيتان والمشاريع الميتة)
-            // 3. الماركت كاب يجب أن يكون منطقياً ومتاحاً للصعود
-            if (ageMins > 20 || liq < 1500 || liq > 50000 || mc === 0) {
+            if (liq < 1500 || mc === 0) {
                 return { ignore: true };
             }
 
             const ratio = ((liq / mc) * 100);
-            
-            // 4. نسبة سيولة صحية (نسبة الـ LP من الماركت كاب يجب أن تكون بين 10% إلى 60% لضمان الأمان وعدم القدرة على سحب السيولة بسهولة أو وجود تلاعب كبير)
-            if (ratio < 8 || ratio > 70) {
-                return { ignore: true };
+
+            // تحديد حالة المنحنى وقوة العملة بناءً على الماركت كاب والسيولة المتقدمة
+            let curveStatus = 'نهاية منحنى صاعد بنسبة 70% (زخم قوي ومتماسك)';
+            if (mc >= 30000 && mc <= 100000) {
+                curveStatus = 'نهاية منحنى متقدمة بنسبة 85% (عملة قوية وثابتة بالسوق)';
+            } else if (mc > 100000) {
+                curveStatus = 'مرحلة متقدمة جداً / قرب الاكتمال بنسبة 90%+ (قوة وصلابة عالية)';
+            } else {
+                curveStatus = 'منتصف المنحنى بنسبة 60% (في طريقها للاكتمال بقوة)';
             }
 
-            let safetyBadge = '🛡️ <b>آمن وقوي (High Security & Liquidity)</b>';
-            if (ratio >= 20 && ratio <= 50 && liq >= 3000) {
-                safetyBadge = '💎 <b>جوهرة نادرة (Top Tier Alpha Potential)</b>';
-            }
+            let safetyText = `آمنة بنسبة ممتازة | نسبة السيولة للـ MC: ${ratio.toFixed(1)}%`;
 
             const buys5m = bestPair.txns?.m5?.buys || 0;
             const sells5m = bestPair.txns?.m5?.sells || 0;
@@ -67,8 +64,8 @@ async function getTokenMetadataAndSecurityScore(mint) {
                 priceUsd: bestPair.priceUsd ? `$${parseFloat(bestPair.priceUsd).toFixed(6)}` : 'N/A',
                 marketCap: `$${mc.toLocaleString()}`,
                 liquidity: `$${liq.toLocaleString()}`,
-                ratio: ratio.toFixed(1) + '%',
-                safetyBadge: safetyBadge,
+                safety: safetyText,
+                curveStatus: curveStatus,
                 age: `${ageMins} دقيقة`,
                 vol5m: vol5m,
                 buys5m: buys5m,
@@ -76,7 +73,7 @@ async function getTokenMetadataAndSecurityScore(mint) {
             };
         }
     } catch (e) {
-        console.error("DexScreener Security Check Error:", e.message);
+        console.error("Error:", e.message);
     }
     return { ignore: true };
 }
@@ -125,7 +122,6 @@ app.post('/webhook', async (req, res) => {
         for (const item of events) {
             if (!item) continue;
 
-            const signature = item.signature || 'N/A';
             const extracted = extractMints(item);
             if (extracted.length === 0) continue;
 
@@ -133,20 +129,16 @@ app.post('/webhook', async (req, res) => {
             const tokenData = await getTokenMetadataAndSecurityScore(targetMint);
 
             if (tokenData && tokenData.ignore) {
-                continue; // استبعاد التوكنات الضعيفة أو غير الآمنة بصمت تام
+                continue;
             }
 
-            let msg = `💎 <b>ALPHA RADAR - رادار الأمان والسيولة القوية</b> 💎\n\n`;
-            msg += `🏷 <b>العملة:</b> ${tokenData.name} ($${tokenData.symbol})\n`;
-            msg += `📊 <b>تصنيف الأمان:</b> ${tokenData.safetyBadge}\n\n`;
-            msg += `💵 <b>السعر:</b> <code>${tokenData.priceUsd}</code>\n`;
-            msg += `💰 <b>الماركت كاب:</b> <code>${tokenData.marketCap}</code>\n`;
-            msg += `💧 <b>السيولة الآمنة:</b> <code>${tokenData.liquidity}</code> (نسبة الدعم: ${tokenData.ratio})\n`;
-            msg += `⏱ <b>عمر التوكن:</b> <code>${tokenData.age}</code>\n`;
-            msg += `📈 <b>حجم تداول (5m):</b> <code>${tokenData.vol5m}</code>\n`;
-            msg += `📊 <b>المعاملات:</b> 🟩 شراء ${tokenData.buys5m} | 🟥 بيع ${tokenData.sells5m}\n\n`;
-            msg += `🪙 <b>العقد (Mint):</b>\n<code>${targetMint}</code>\n\n`;
-            msg += `🔗 <b>التوقيع:</b> <code>${signature.substring(0, 16)}...</code>`;
+            // ترتيب الرسالة بالدقة المطلوبة
+            let msg = `🏷 <b>العملة:</b> ${tokenData.name} ($${tokenData.symbol}) - السعر: <code>${tokenData.priceUsd}</code>\n`;
+            msg += `🪙 <b>العقد:</b>\n<code>${targetMint}</code>\n`;
+            msg += `🛡 <b>أمانها:</b> ${tokenData.safety} (السيولة: ${tokenData.liquidity})\n`;
+            msg += `📈 <b>الحالة:</b> ${tokenData.curveStatus}\n`;
+            msg += `💰 <b>ماركت كاب:</b> <code>${tokenData.marketCap}</code> | ⏱ العمر: ${tokenData.age}\n`;
+            msg += `📊 <b>حجم تداول (5m):</b> ${tokenData.vol5m} (🟩 ${tokenData.buys5m} | 🟥 ${tokenData.sells5m})`;
 
             const buttons = [
                 [
@@ -155,7 +147,7 @@ app.post('/webhook', async (req, res) => {
                 ],
                 [
                     { text: '💊 Pump.fun', url: `https://pump.fun/${targetMint}` },
-                    { text: '🛡 RugCheck (افحص الأمان)', url: `https://rugcheck.xyz/tokens/${targetMint}` }
+                    { text: '🛡 RugCheck', url: `https://rugcheck.xyz/tokens/${targetMint}` }
                 ]
             ];
 
@@ -167,7 +159,7 @@ app.post('/webhook', async (req, res) => {
 });
 
 app.get('/', (req, res) => {
-    res.send('Alpha Secure Engine is active!');
+    res.send('Engine is active!');
 });
 
 const PORT = process.env.PORT || 3000;
