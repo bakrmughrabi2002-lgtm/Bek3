@@ -13,7 +13,19 @@ const IGNORED_MINTS = [
     'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'  // USDT
 ];
 
-// دالة جلب البيانات مع فلتر الحجب للسيولة الضعيفة
+// دالة حساب عمر التوكن بتنسيق واضح
+function formatAge(createdAt) {
+    if (!createdAt) return 'N/A';
+    const diffMs = Date.now() - createdAt;
+    const diffMins = Math.floor(diffMs / (1000 * 60));
+    if (diffMins < 60) return `${diffMins} دقيقة`;
+    const diffHours = Math.floor(diffMins / 60);
+    if (diffHours < 24) return `${diffHours} ساعة`;
+    const diffDays = Math.floor(diffHours / 24);
+    return `${diffDays} يوم`;
+}
+
+// دالة جلب البيانات وتفاصيل التوكن الكاملة
 async function getTokenMetadataAndScore(mint) {
     try {
         const res = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${mint}`, { timeout: 3500 });
@@ -22,9 +34,9 @@ async function getTokenMetadataAndScore(mint) {
             const mc = pair.fdv ? Math.round(pair.fdv) : 0;
             const liq = pair.liquidity?.usd ? Math.round(pair.liquidity.usd) : 0;
             
-            // فلتر الحجب: استبعاد العملات ذات السيولة الميتة (أقل من 1,000$)
+            // فلتر الحجب: استبعاد التوكنات ميتة السيولة (< $1000)
             if (liq < 1000 && mc > 0) {
-                return { ignore: true, reason: 'Low Liquidity' };
+                return { ignore: true };
             }
 
             let scoreTag = '🟡 مخاطرة متوسطة / متابعة';
@@ -34,7 +46,6 @@ async function getTokenMetadataAndScore(mint) {
                 const ratio = ((liq / mc) * 100).toFixed(1);
                 ratioText = `${ratio}%`;
 
-                // الشروط الذهبية (MC بين $5k و $35k ونسبة سيولة متوازنة)
                 if (mc >= 5000 && mc <= 35000 && ratio >= 12 && ratio <= 40) {
                     scoreTag = '🟢 <b>فرصة ذهبية (High Potential 10x-100x)</b>';
                 } else if (mc > 35000 && mc <= 100000) {
@@ -44,6 +55,11 @@ async function getTokenMetadataAndScore(mint) {
                 }
             }
 
+            const buys5m = pair.txns?.m5?.buys || 0;
+            const sells5m = pair.txns?.m5?.sells || 0;
+            const vol5m = pair.volume?.m5 ? `$${Math.round(pair.volume.m5).toLocaleString()}` : '$0';
+            const age = formatAge(pair.pairCreatedAt);
+
             return {
                 ignore: false,
                 name: pair.baseToken.name || 'N/A',
@@ -52,11 +68,15 @@ async function getTokenMetadataAndScore(mint) {
                 marketCap: mc ? `$${mc.toLocaleString()}` : 'N/A',
                 liquidity: liq ? `$${liq.toLocaleString()}` : 'N/A',
                 ratio: ratioText,
-                scoreTag: scoreTag
+                scoreTag: scoreTag,
+                age: age,
+                vol5m: vol5m,
+                buys5m: buys5m,
+                sells5m: sells5m
             };
         }
     } catch (e) {
-        // عدم توفر بيانات الشارت بعد
+        // لا توجد بيانات على DEXScreener بعد
     }
     return null;
 }
@@ -95,7 +115,6 @@ app.post('/webhook', async (req, res) => {
 
             const signature = item.signature || 'N/A';
             const type = item.type || 'SWAP';
-            const fee = item.fee ? (item.fee / 1e9).toFixed(5) : '0';
 
             let targetMint = null;
             if (item.tokenTransfers && item.tokenTransfers.length > 0) {
@@ -111,23 +130,26 @@ app.post('/webhook', async (req, res) => {
 
             const tokenData = await getTokenMetadataAndScore(targetMint);
 
-            // يتجاهل التنبيه إذا كانت السيولة ضعيفة وميتة
             if (tokenData && tokenData.ignore) continue;
 
             let msg = `🎯 <b>ALPHA RADAR - تحليل الفرصة</b> 🎯\n\n`;
             
             if (tokenData) {
-                msg += `🏷 <b>التوكن:</b> ${tokenData.name} ($${tokenData.symbol})\n`;
+                msg += `🏷 <b>اسم العملة:</b> ${tokenData.name} ($${tokenData.symbol})\n`;
                 msg += `📊 <b>التقييم:</b> ${tokenData.scoreTag}\n\n`;
-                msg += `💵 <b>السعر:</b> <code>${tokenData.priceUsd}</code>\n`;
-                msg += `💰 <b>الماركت كاب:</b> <code>${tokenData.marketCap}</code>\n`;
-                msg += `💧 <b>السيولة:</b> <code>${tokenData.liquidity}</code> (نسبة LP: ${tokenData.ratio})\n\n`;
+                msg += `💵 <b>السعر الحلي:</b> <code>${tokenData.priceUsd}</code>\n`;
+                msg += `💰 <b>الماركت كاب (MC):</b> <code>${tokenData.marketCap}</code>\n`;
+                msg += `💧 <b>السيولة (LP):</b> <code>${tokenData.liquidity}</code> (نسبة LP: ${tokenData.ratio})\n`;
+                msg += `⏱ <b>عمر التوكن:</b> <code>${tokenData.age}</code>\n`;
+                msg += `📈 <b>حجم تداول (5m Vol):</b> <code>${tokenData.vol5m}</code>\n`;
+                msg += `📊 <b>معاملات 5m:</b> 🟩 شراء ${tokenData.buys5m} | 🟥 بيع ${tokenData.sells5m}\n\n`;
             } else {
-                msg += `⚡️ <b>التقييم:</b> 🟢 <b>إطلاق أولي مبكر جداً (Ultra Early LP)</b>\n\n`;
+                msg += `⚡️ <b>التقييم:</b> 🟢 <b>إطلاق أولي مبكر جداً (Ultra Early LP)</b>\n`;
+                msg += `ℹ️ <b>الحالة:</b> قيد الإنشاء / بداية منحنى Pump.fun\n\n`;
             }
 
-            msg += `📌 <b>العملية:</b> <code>${type}</code>\n`;
-            msg += `🪙 <b>العقد (Mint):</b> <code>${targetMint}</code>\n\n`;
+            msg += `📌 <b>نوع العملية:</b> <code>${type}</code>\n`;
+            msg += `🪙 <b>العقد (Mint):</b>\n<code>${targetMint}</code>\n\n`;
             msg += `🔗 <b>المعرف:</b> <code>${signature.substring(0, 16)}...</code>`;
 
             const buttons = [
@@ -137,7 +159,7 @@ app.post('/webhook', async (req, res) => {
                 ],
                 [
                     { text: '💊 Pump.fun', url: `https://pump.fun/${targetMint}` },
-                    { text: '🛡 RugCheck (فحص أمان الحرق)', url: `https://rugcheck.xyz/tokens/${targetMint}` }
+                    { text: '🛡 RugCheck (فحص الأمان)', url: `https://rugcheck.xyz/tokens/${targetMint}` }
                 ],
                 [
                     { text: '🔍 Solscan', url: `https://solscan.io/tx/${signature}` }
