@@ -13,7 +13,7 @@ const IGNORED_MINTS = [
     'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'  // USDT
 ];
 
-// دالة لجلب معلومات التوكن من DEXScreener
+// دالة فحص بيانات التوكن والسيولة عبر DEXScreener
 async function getTokenMetadata(mint) {
     try {
         const res = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${mint}`, { timeout: 3000 });
@@ -23,11 +23,12 @@ async function getTokenMetadata(mint) {
                 name: pair.baseToken.name || 'N/A',
                 symbol: pair.baseToken.symbol || 'N/A',
                 priceUsd: pair.priceUsd ? `$${parseFloat(pair.priceUsd).toFixed(6)}` : 'N/A',
-                marketCap: pair.fdv ? `$${Math.round(pair.fdv).toLocaleString()}` : 'N/A'
+                marketCap: pair.fdv ? `$${Math.round(pair.fdv).toLocaleString()}` : 'N/A',
+                liquidity: pair.liquidity?.usd ? `$${Math.round(pair.liquidity.usd).toLocaleString()}` : 'N/A'
             };
         }
     } catch (e) {
-        console.log("Could not fetch token details yet (likely brand new token).");
+        // التوكن حديث جداً ولم يدرج بعد على DEXScreener
     }
     return null;
 }
@@ -68,8 +69,8 @@ app.post('/webhook', async (req, res) => {
             const type = item.type || 'SWAP';
             const fee = item.fee ? (item.fee / 1e9).toFixed(5) : '0';
 
+            // استخراج عقد التوكن الفعلي
             let targetMint = null;
-
             if (item.tokenTransfers && item.tokenTransfers.length > 0) {
                 for (const t of item.tokenTransfers) {
                     if (t.mint && !IGNORED_MINTS.includes(t.mint)) {
@@ -81,32 +82,33 @@ app.post('/webhook', async (req, res) => {
 
             if (!targetMint) continue;
 
-            // جلب البيانات الإضافية للتوكن
+            // جلب مؤشرات السيولة والزخم
             const tokenMeta = await getTokenMetadata(targetMint);
 
-            let msg = `🔥 <b>ALPHA ALERT - توكن جديد!</b>\n\n`;
+            let msg = `🚨 <b>ALPHA RADAR - إشارة زخم وسيولة!</b> 🚨\n\n`;
             
             if (tokenMeta) {
-                msg += `🏷 <b>الاسم:</b> ${tokenMeta.name} ($${tokenMeta.symbol})\n`;
+                msg += `💎 <b>التوكن:</b> ${tokenMeta.name} ($${tokenMeta.symbol})\n`;
                 msg += `💵 <b>السعر:</b> <code>${tokenMeta.priceUsd}</code>\n`;
-                msg += `📊 <b>القيمة السوقية:</b> <code>${tokenMeta.marketCap}</code>\n\n`;
+                msg += `📊 <b>القيمة السوقية:</b> <code>${tokenMeta.marketCap}</code>\n`;
+                msg += `💧 <b>السيولة المتاحة:</b> <code>${tokenMeta.liquidity}</code>\n\n`;
             } else {
-                msg += `⚡️ <i>(إطلاق حديث جداً - جاري جلب السعر...)</i>\n\n`;
+                msg += `⚡️ <b>النوع:</b> إطلاق حديث جداً (New Liquidity Pool)\n\n`;
             }
 
-            msg += `📌 <b>النوع:</b> <code>${type}</code>\n`;
+            msg += `📌 <b>نوع العملية:</b> <code>${type}</code>\n`;
             msg += `💸 <b>الرسوم:</b> ${fee} SOL\n`;
             msg += `🪙 <b>العقد (Mint):</b> <code>${targetMint}</code>\n\n`;
             msg += `🔗 <b>المعرف:</b> <code>${signature.substring(0, 16)}...</code>`;
 
             const buttons = [
                 [
-                    { text: '🚀 Photon', url: `https://photon-sol.tinyastro.io/en/lp/${targetMint}` },
+                    { text: '🚀 Photon (تداول سريع)', url: `https://photon-sol.tinyastro.io/en/lp/${targetMint}` },
                     { text: '📊 DEXScreener', url: `https://dexscreener.com/solana/${targetMint}` }
                 ],
                 [
                     { text: '💊 Pump.fun', url: `https://pump.fun/${targetMint}` },
-                    { text: '🛡 RugCheck', url: `https://rugcheck.xyz/tokens/${targetMint}` }
+                    { text: '🛡 RugCheck (فحص الأمان)', url: `https://rugcheck.xyz/tokens/${targetMint}` }
                 ],
                 [
                     { text: '🔍 Solscan', url: `https://solscan.io/tx/${signature}` }
@@ -121,7 +123,7 @@ app.post('/webhook', async (req, res) => {
 });
 
 app.get('/', (req, res) => {
-    res.send('Bot is active!');
+    res.send('Alpha Radar is active!');
 });
 
 const PORT = process.env.PORT || 3000;
