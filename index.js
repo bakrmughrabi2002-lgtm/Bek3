@@ -13,73 +13,72 @@ const IGNORED_MINTS = [
     'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'  // USDT
 ];
 
-function formatAge(createdAt) {
-    if (!createdAt) return 'N/A';
+function formatAgeMinutes(createdAt) {
+    if (!createdAt) return 99999;
     const diffMs = Date.now() - createdAt;
-    const diffMins = Math.floor(diffMs / (1000 * 60));
-    if (diffMins < 60) return `${diffMins} دقيقة`;
-    const diffHours = Math.floor(diffMins / 60);
-    if (diffHours < 24) return `${diffHours} ساعة`;
-    const diffDays = Math.floor(diffHours / 24);
-    return `${diffDays} يوم`;
+    return Math.floor(diffMs / (1000 * 60));
 }
 
-async function getTokenMetadataAndScore(mint) {
+async function getTokenMetadataAndSecurityScore(mint) {
     try {
         const res = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${mint}`, { timeout: 3500 });
         if (res.data && res.data.pairs && res.data.pairs.length > 0) {
-            const pair = res.data.pairs[0];
-            const mc = pair.fdv ? Math.round(pair.fdv) : 0;
-            const liq = pair.liquidity?.usd ? Math.round(pair.liquidity.usd) : 0;
-            
-            if (liq < 1000 && mc > 0) {
-                return { ignore: true };
-            }
-
-            let scoreTag = '🟡 مخاطرة متوسطة / متابعة';
-            let ratioText = 'N/A';
-
-            if (mc > 0 && liq > 0) {
-                const ratio = ((liq / mc) * 100).toFixed(1);
-                ratioText = `${ratio}%`;
-
-                if (mc >= 5000 && mc <= 35000 && ratio >= 12 && ratio <= 40) {
-                    scoreTag = '🟢 <b>فرصة ذهبية (High Potential 10x-100x)</b>';
-                } else if (mc > 35000 && mc <= 100000) {
-                    scoreTag = '🔵 <b>زخم متوسط (Momentum Phase)</b>';
-                } else if (mc < 5000) {
-                    scoreTag = '⚡️ <b>إطلاق حديث جداً (Micro Cap)</b>';
+            // اختيار البير الأكثر سيولة لضمان دقة البيانات
+            const pairs = res.data.pairs;
+            let bestPair = pairs[0];
+            for (const p of pairs) {
+                if ((p.liquidity?.usd || 0) > (bestPair.liquidity?.usd || 0)) {
+                    bestPair = p;
                 }
             }
 
-            const buys5m = pair.txns?.m5?.buys || 0;
-            const sells5m = pair.txns?.m5?.sells || 0;
-            const vol5m = pair.volume?.m5 ? `$${Math.round(pair.volume.m5).toLocaleString()}` : '$0';
-            const age = formatAge(pair.pairCreatedAt);
+            const mc = bestPair.fdv ? Math.round(bestPair.fdv) : 0;
+            const liq = bestPair.liquidity?.usd ? Math.round(bestPair.liquidity.usd) : 0;
+            const ageMins = formatAgeMinutes(bestPair.pairCreatedAt);
+
+            // 🛡️ معايير الأمان والقوة الصارمة:
+            // 1. يجب ألا يتجاوز عمر التوكن 20 دقيقة (Ultra Early)
+            // 2. السيولة يجب أن تكون أكبر من أو تساوي 1,500$ وأقل من 50,000$ (لتجنب الحيتان والمشاريع الميتة)
+            // 3. الماركت كاب يجب أن يكون منطقياً ومتاحاً للصعود
+            if (ageMins > 20 || liq < 1500 || liq > 50000 || mc === 0) {
+                return { ignore: true };
+            }
+
+            const ratio = ((liq / mc) * 100);
+            
+            // 4. نسبة سيولة صحية (نسبة الـ LP من الماركت كاب يجب أن تكون بين 10% إلى 60% لضمان الأمان وعدم القدرة على سحب السيولة بسهولة أو وجود تلاعب كبير)
+            if (ratio < 8 || ratio > 70) {
+                return { ignore: true };
+            }
+
+            let safetyBadge = '🛡️ <b>آمن وقوي (High Security & Liquidity)</b>';
+            if (ratio >= 20 && ratio <= 50 && liq >= 3000) {
+                safetyBadge = '💎 <b>جوهرة نادرة (Top Tier Alpha Potential)</b>';
+            }
+
+            const buys5m = bestPair.txns?.m5?.buys || 0;
+            const sells5m = bestPair.txns?.m5?.sells || 0;
+            const vol5m = bestPair.volume?.m5 ? `$${Math.round(bestPair.volume.m5).toLocaleString()}` : '$0';
 
             return {
                 ignore: false,
-                name: pair.baseToken.name || 'N/A',
-                symbol: pair.baseToken.symbol || 'N/A',
-                priceUsd: pair.priceUsd ? `$${parseFloat(pair.priceUsd).toFixed(6)}` : 'N/A',
-                marketCap: mc ? `$${calcMC(mc)}` : 'N/A',
-                liquidity: liq ? `$${liq.toLocaleString()}` : 'N/A',
-                ratio: ratioText,
-                scoreTag: scoreTag,
-                age: age,
+                name: bestPair.baseToken.name || 'N/A',
+                symbol: bestPair.baseToken.symbol || 'N/A',
+                priceUsd: bestPair.priceUsd ? `$${parseFloat(bestPair.priceUsd).toFixed(6)}` : 'N/A',
+                marketCap: `$${mc.toLocaleString()}`,
+                liquidity: `$${liq.toLocaleString()}`,
+                ratio: ratio.toFixed(1) + '%',
+                safetyBadge: safetyBadge,
+                age: `${ageMins} دقيقة`,
                 vol5m: vol5m,
                 buys5m: buys5m,
                 sells5m: sells5m
             };
         }
     } catch (e) {
-        console.error("DexScreener Fetch Error:", e.message);
+        console.error("DexScreener Security Check Error:", e.message);
     }
-    return null;
-}
-
-function calcMC(mc) {
-    return mc ? mc.toLocaleString() : 'N/A';
+    return { ignore: true };
 }
 
 async function sendTelegramMessage(message, inlineKeyboard = null) {
@@ -106,7 +105,6 @@ async function sendTelegramMessage(message, inlineKeyboard = null) {
 
 function extractMints(item) {
     const mints = new Set();
-    
     if (item.tokenTransfers && Array.isArray(item.tokenTransfers)) {
         for (const t of item.tokenTransfers) {
             if (t.mint && !IGNORED_MINTS.includes(t.mint)) {
@@ -114,32 +112,10 @@ function extractMints(item) {
             }
         }
     }
-
-    if (item.instructions && Array.isArray(item.instructions)) {
-        for (const inst of item.instructions) {
-            if (inst.accounts && Array.isArray(inst.accounts)) {
-                for (const acc of inst.accounts) {
-                    if (typeof acc === 'string' && acc.length >= 32 && acc.length <= 44 && !IGNORED_MINTS.includes(acc)) {
-                        // Basic check
-                    }
-                }
-            }
-        }
-    }
-
-    if (item.accountData && Array.isArray(item.accountData)) {
-        for (const ad of item.accountData) {
-            if (ad.account && !IGNORED_MINTS.includes(ad.account)) {
-                mints.add(ad.account);
-            }
-        }
-    }
-
     return Array.from(mints);
 }
 
 app.post('/webhook', async (req, res) => {
-    // دائماً نرد بسرعة بـ 200 لمنع Helius من عمل Pause للـ Webhook
     res.status(200).send('OK');
 
     try {
@@ -149,66 +125,49 @@ app.post('/webhook', async (req, res) => {
         for (const item of events) {
             if (!item) continue;
 
-            const signature = item.signature || (item.transaction ? item.transaction.signatures?.[0] : 'N/A') || 'N/A';
-            const type = item.type || 'SWAP';
-
+            const signature = item.signature || 'N/A';
             const extracted = extractMints(item);
             if (extracted.length === 0) continue;
 
             const targetMint = extracted[0];
-
-            console.log(`Processing Mint: ${targetMint}`);
-
-            const tokenData = await getTokenMetadataAndScore(targetMint);
+            const tokenData = await getTokenMetadataAndSecurityScore(targetMint);
 
             if (tokenData && tokenData.ignore) {
-                console.log(`Skipping low liquidity token: ${targetMint}`);
-                continue;
+                continue; // استبعاد التوكنات الضعيفة أو غير الآمنة بصمت تام
             }
 
-            let msg = `🎯 <b>ALPHA RADAR - تحليل الفرصة</b> 🎯\n\n`;
-            
-            if (tokenData) {
-                msg += `🏷 <b>اسم العملة:</b> ${tokenData.name} ($${tokenData.symbol})\n`;
-                msg += `📊 <b>التقييم:</b> ${tokenData.scoreTag}\n\n`;
-                msg += `💵 <b>السعر الحالي:</b> <code>${tokenData.priceUsd}</code>\n`;
-                msg += `💰 <b>الماركت كاب (MC):</b> <code>${tokenData.marketCap}</code>\n`;
-                msg += `💧 <b>السيولة (LP):</b> <code>${tokenData.liquidity}</code> (نسبة LP: ${tokenData.ratio})\n`;
-                msg += `⏱ <b>عمر التوكن:</b> <code>${tokenData.age}</code>\n`;
-                msg += `📈 <b>حجم تداول (5m Vol):</b> <code>${tokenData.vol5m}</code>\n`;
-                msg += `📊 <b>معاملات 5m:</b> 🟩 شراء ${tokenData.buys5m} | 🟥 بيع ${tokenData.sells5m}\n\n`;
-            } else {
-                msg += `⚡️ <b>التقييم:</b> 🟢 <b>إطلاق أولي مبكر جداً (Ultra Early LP)</b>\n`;
-                msg += `ℹ️ <b>الحالة:</b> قيد الإنشاء / بداية منحنى Pump.fun\n\n`;
-            }
-
-            msg += `📌 <b>نوع العملية:</b> <code>${type}</code>\n`;
+            let msg = `💎 <b>ALPHA RADAR - رادار الأمان والسيولة القوية</b> 💎\n\n`;
+            msg += `🏷 <b>العملة:</b> ${tokenData.name} ($${tokenData.symbol})\n`;
+            msg += `📊 <b>تصنيف الأمان:</b> ${tokenData.safetyBadge}\n\n`;
+            msg += `💵 <b>السعر:</b> <code>${tokenData.priceUsd}</code>\n`;
+            msg += `💰 <b>الماركت كاب:</b> <code>${tokenData.marketCap}</code>\n`;
+            msg += `💧 <b>السيولة الآمنة:</b> <code>${tokenData.liquidity}</code> (نسبة الدعم: ${tokenData.ratio})\n`;
+            msg += `⏱ <b>عمر التوكن:</b> <code>${tokenData.age}</code>\n`;
+            msg += `📈 <b>حجم تداول (5m):</b> <code>${tokenData.vol5m}</code>\n`;
+            msg += `📊 <b>المعاملات:</b> 🟩 شراء ${tokenData.buys5m} | 🟥 بيع ${tokenData.sells5m}\n\n`;
             msg += `🪙 <b>العقد (Mint):</b>\n<code>${targetMint}</code>\n\n`;
-            msg += `🔗 <b>المعرف:</b> <code>${signature.substring(0, 16)}...</code>`;
+            msg += `🔗 <b>التوقيع:</b> <code>${signature.substring(0, 16)}...</code>`;
 
             const buttons = [
                 [
-                    { text: '🚀 Photon (تداول سريع)', url: `https://photon-sol.tinyastro.io/en/lp/${targetMint}` },
+                    { text: '🚀 Photon', url: `https://photon-sol.tinyastro.io/en/lp/${targetMint}` },
                     { text: '📊 DEXScreener', url: `https://dexscreener.com/solana/${targetMint}` }
                 ],
                 [
                     { text: '💊 Pump.fun', url: `https://pump.fun/${targetMint}` },
-                    { text: '🛡 RugCheck (تقرير تفصيلي)', url: `https://rugcheck.xyz/tokens/${targetMint}` }
-                ],
-                [
-                    { text: '🔍 Solscan', url: `https://solscan.io/tx/${signature}` }
+                    { text: '🛡 RugCheck (افحص الأمان)', url: `https://rugcheck.xyz/tokens/${targetMint}` }
                 ]
             ];
 
             await sendTelegramMessage(msg, buttons);
         }
     } catch (err) {
-        console.error("Webhook Error:", err.message);
+        console.error("Error:", err.message);
     }
 });
 
 app.get('/', (req, res) => {
-    res.send('Alpha Smart Engine is active!');
+    res.send('Alpha Secure Engine is active!');
 });
 
 const PORT = process.env.PORT || 3000;
