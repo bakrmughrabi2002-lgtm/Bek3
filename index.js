@@ -2,7 +2,7 @@ const express = require('express');
 const axios = require('axios');
 const app = express();
 
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
@@ -22,27 +22,6 @@ function formatAge(createdAt) {
     if (diffHours < 24) return `${diffHours} ساعة`;
     const diffDays = Math.floor(diffHours / 24);
     return `${diffDays} يوم`;
-}
-
-// دالة الفحص التلقائي للأمان عبر RugCheck
-async function checkRugSafety(mint) {
-    try {
-        const res = await axios.get(`https://api.rugcheck.xyz/v1/tokens/${mint}/report/summary`, { timeout: 3000 });
-        if (res.data) {
-            // إذا كان التقييم مخاطرة عالية
-            if (res.data.score > 5000 || res.data.status === 'danger') {
-                return false; 
-            }
-            // إذا كانت هناك مخاطر محددة مثل عدم حظر الطباعة
-            if (res.data.risks) {
-                const highRisks = res.data.risks.filter(r => r.level === 'danger' || r.level === 'critical');
-                if (highRisks.length > 0) return false;
-            }
-        }
-    } catch (e) {
-        // إذا كان التوكن جديداً جداً على RugCheck ولم يُصنف كخطر مؤكد، نمرره للمتابعة
-    }
-    return true;
 }
 
 async function getTokenMetadataAndScore(mint) {
@@ -83,7 +62,7 @@ async function getTokenMetadataAndScore(mint) {
                 name: pair.baseToken.name || 'N/A',
                 symbol: pair.baseToken.symbol || 'N/A',
                 priceUsd: pair.priceUsd ? `$${parseFloat(pair.priceUsd).toFixed(6)}` : 'N/A',
-                marketCap: mc ? `$${mc.toLocaleString()}` : 'N/A',
+                marketCap: mc ? `$${calcMC(mc)}` : 'N/A',
                 liquidity: liq ? `$${liq.toLocaleString()}` : 'N/A',
                 ratio: ratioText,
                 scoreTag: scoreTag,
@@ -94,8 +73,13 @@ async function getTokenMetadataAndScore(mint) {
             };
         }
     } catch (e) {
+        console.error("DexScreener Fetch Error:", e.message);
     }
     return null;
+}
+
+function calcMC(mc) {
+    return mc ? mc.toLocaleString() : 'N/A';
 }
 
 async function sendTelegramMessage(message, inlineKeyboard = null) {
@@ -116,11 +100,46 @@ async function sendTelegramMessage(message, inlineKeyboard = null) {
     try {
         await axios.post(url, payload);
     } catch (error) {
-        console.error("Telegram Error:", error.response?.data || error.message);
+        console.error("Telegram API Error:", error.response?.data || error.message);
     }
 }
 
+function extractMints(item) {
+    const mints = new Set();
+    
+    if (item.tokenTransfers && Array.isArray(item.tokenTransfers)) {
+        for (const t of item.tokenTransfers) {
+            if (t.mint && !IGNORED_MINTS.includes(t.mint)) {
+                mints.add(t.mint);
+            }
+        }
+    }
+
+    if (item.instructions && Array.isArray(item.instructions)) {
+        for (const inst of item.instructions) {
+            if (inst.accounts && Array.isArray(inst.accounts)) {
+                for (const acc of inst.accounts) {
+                    if (typeof acc === 'string' && acc.length >= 32 && acc.length <= 44 && !IGNORED_MINTS.includes(acc)) {
+                        // Basic check
+                    }
+                }
+            }
+        }
+    }
+
+    if (item.accountData && Array.isArray(item.accountData)) {
+        for (const ad of item.accountData) {
+            if (ad.account && !IGNORED_MINTS.includes(ad.account)) {
+                mints.add(ad.account);
+            }
+        }
+    }
+
+    return Array.from(mints);
+}
+
 app.post('/webhook', async (req, res) => {
+    // دائماً نرد بسرعة بـ 200 لمنع Helius من عمل Pause للـ Webhook
     res.status(200).send('OK');
 
     try {
@@ -130,34 +149,24 @@ app.post('/webhook', async (req, res) => {
         for (const item of events) {
             if (!item) continue;
 
-            const signature = item.signature || 'N/A';
+            const signature = item.signature || (item.transaction ? item.transaction.signatures?.[0] : 'N/A') || 'N/A';
             const type = item.type || 'SWAP';
 
-            let targetMint = null;
-            if (item.tokenTransfers && item.tokenTransfers.length > 0) {
-                for (const t of item.tokenTransfers) {
-                    if (t.mint && !IGNORED_MINTS.includes(t.mint)) {
-                        targetMint = t.mint;
-                        break;
-                    }
-                }
-            }
+            const extracted = extractMints(item);
+            if (extracted.length === 0) continue;
 
-            if (!targetMint) continue;
+            const targetMint = extracted[0];
 
-            // 1. الفحص الآلي للأمان أولاً قبل أي معالجة
-            const isSafe = await checkRugSafety(targetMint);
-            if (!isSafe) {
-                console.log(`[RugCheck Auto-Filter] Skipped unsafe mint: ${targetMint}`);
-                continue; // تجاهل التوكن غير الآمن فوراً
-            }
+            console.log(`Processing Mint: ${targetMint}`);
 
             const tokenData = await getTokenMetadataAndScore(targetMint);
 
-            if (tokenData && tokenData.ignore) continue;
+            if (tokenData && tokenData.ignore) {
+                console.log(`Skipping low liquidity token: ${targetMint}`);
+                continue;
+            }
 
             let msg = `🎯 <b>ALPHA RADAR - تحليل الفرصة</b> 🎯\n\n`;
-            msg += `🛡 <b>فحص الأمان التلقائي:</b> ✅ <i>آمن (RugCheck Passed)</i>\n\n`;
             
             if (tokenData) {
                 msg += `🏷 <b>اسم العملة:</b> ${tokenData.name} ($${tokenData.symbol})\n`;
@@ -194,13 +203,15 @@ app.post('/webhook', async (req, res) => {
             await sendTelegramMessage(msg, buttons);
         }
     } catch (err) {
-        console.error("Webhook processing error:", err.message);
+        console.error("Webhook Error:", err.message);
     }
 });
 
 app.get('/', (req, res) => {
-    res.send('Alpha Smart Engine with Auto RugCheck is running!');
+    res.send('Alpha Smart Engine is active!');
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+});
