@@ -6,12 +6,10 @@ app.use(express.json());
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const WSOL_ADDRESS = 'So11111111111111111111111111111111111111112';
 
 async function sendTelegramMessage(message, inlineKeyboard = null) {
-    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
-        console.log("Missing Telegram Credentials!");
-        return;
-    }
+    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
     const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
     
     const payload = {
@@ -33,73 +31,68 @@ async function sendTelegramMessage(message, inlineKeyboard = null) {
 }
 
 app.post('/webhook', async (req, res) => {
-    // إرجاع استجابة فورية لـ Helius لمنع انتهاء مهلة الطلب
     res.status(200).send('OK');
 
     try {
-        const data = req.body;
-        console.log("Incoming Webhook Event Received");
+        const body = req.body;
+        const events = Array.isArray(body) ? body : [body];
 
-        const transactions = Array.isArray(data) ? data : [data];
+        for (const item of events) {
+            if (!item) continue;
 
-        for (const tx of transactions) {
-            if (!tx) continue;
+            const signature = item.signature || 'N/A';
+            const type = item.type || 'SWAP';
+            const fee = item.fee ? (item.fee / 1e9).toFixed(5) : '0';
 
-            const signature = tx.signature || 'N/A';
-            const type = tx.type || 'SWAP/TRANSFER';
-            const fee = tx.fee ? (tx.fee / 1e9).toFixed(5) : '0';
+            // استخراج التوكن الفعلي وتجاهل WSOL
+            let targetMint = null;
 
-            // استخراج المينت (Mint) الخاص بالتوكن بأكثر من طريقة
-            let tokenAddress = null;
-            
-            if (tx.tokenTransfers && tx.tokenTransfers.length > 0) {
-                tokenAddress = tx.tokenTransfers[0].mint;
-            } else if (tx.instructions && tx.instructions.length > 0) {
-                for (const inst of tx.instructions) {
-                    if (inst.parsed?.info?.mint) {
-                        tokenAddress = inst.parsed.info.mint;
+            if (item.tokenTransfers && item.tokenTransfers.length > 0) {
+                for (const t of item.tokenTransfers) {
+                    if (t.mint && t.mint !== WSOL_ADDRESS) {
+                        targetMint = t.mint;
                         break;
                     }
                 }
+                // إذا كانت الصفقة بين WSOL و WSOL أو لم ينطبق الشرط، نأخذ الأول
+                if (!targetMint && item.tokenTransfers[0].mint) {
+                    targetMint = item.tokenTransfers[0].mint;
+                }
             }
 
-            let message = `🎯 <b>تنبيه Alpha - حركة جديدة!</b>\n\n`;
-            message += `📌 <b>النوع:</b> <code>${type}</code>\n`;
-            message += `💸 <b>الرسوم:</b> ${fee} SOL\n`;
+            let msg = `🎯 <b>تنبيه Alpha - اقتناص توكن!</b>\n\n`;
+            msg += `📌 <b>النوع:</b> <code>${type}</code>\n`;
+            msg += `💸 <b>الرسوم:</b> ${fee} SOL\n`;
 
-            if (tokenAddress) {
-                message += `🪙 <b>العقد:</b> <code>${tokenAddress}</code>\n`;
+            if (targetMint) {
+                msg += `🪙 <b>العقد المستهدف:</b> <code>${targetMint}</code>\n`;
             }
 
-            message += `\n🔗 <b>التوقيع:</b> <code>${signature.substring(0, 20)}...</code>\n`;
+            msg += `\n🔗 <b>المعرف:</b> <code>${signature.substring(0, 16)}...</code>`;
 
-            const inlineKeyboard = [];
-
-            if (tokenAddress) {
-                inlineKeyboard.push([
-                    { text: '🚀 Photon', url: `https://photon-sol.tinyastro.io/en/lp/${tokenAddress}` },
-                    { text: '📊 DEXScreener', url: `https://dexscreener.com/solana/${tokenAddress}` }
+            const buttons = [];
+            if (targetMint && targetMint !== WSOL_ADDRESS) {
+                buttons.push([
+                    { text: '🚀 Photon', url: `https://photon-sol.tinyastro.io/en/lp/${targetMint}` },
+                    { text: '📊 DEXScreener', url: `https://dexscreener.com/solana/${targetMint}` }
                 ]);
-                inlineKeyboard.push([
-                    { text: '💊 Pump.fun', url: `https://pump.fun/${tokenAddress}` },
-                    { text: '🛡 RugCheck', url: `https://rugcheck.xyz/tokens/${tokenAddress}` }
+                buttons.push([
+                    { text: '💊 Pump.fun', url: `https://pump.fun/${targetMint}` },
+                    { text: '🛡 RugCheck', url: `https://rugcheck.xyz/tokens/${targetMint}` }
                 ]);
             }
+            buttons.push([{ text: '🔍 Solscan', url: `https://solscan.io/tx/${signature}` }]);
 
-            inlineKeyboard.push([
-                { text: '🔍 Solscan', url: `https://solscan.io/tx/${signature}` }
-            ]);
-
-            await sendTelegramMessage(message, inlineKeyboard);
+            await sendTelegramMessage(msg, buttons);
         }
     } catch (err) {
-        console.error("Error processing webhook:", err.message);
+        console.error("Webhook processing error:", err.message);
     }
 });
 
 app.get('/', (req, res) => {
-    res.send('Bot is running live on Render!');
+    res.send('Bot is active and running!');
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Server started on port ${PORT}`));
