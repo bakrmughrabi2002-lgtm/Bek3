@@ -13,7 +13,7 @@ const IGNORED_MINTS = [
     'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'  // USDT
 ];
 
-// دالة جلب البيانات وتطبيق خوارزمية تقييم الأرقام المثالية
+// دالة جلب البيانات مع فلتر الحجب للسيولة الضعيفة
 async function getTokenMetadataAndScore(mint) {
     try {
         const res = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${mint}`, { timeout: 3500 });
@@ -22,6 +22,11 @@ async function getTokenMetadataAndScore(mint) {
             const mc = pair.fdv ? Math.round(pair.fdv) : 0;
             const liq = pair.liquidity?.usd ? Math.round(pair.liquidity.usd) : 0;
             
+            // فلتر الحجب: استبعاد العملات ذات السيولة الميتة (أقل من 1,000$)
+            if (liq < 1000 && mc > 0) {
+                return { ignore: true, reason: 'Low Liquidity' };
+            }
+
             let scoreTag = '🟡 مخاطرة متوسطة / متابعة';
             let ratioText = 'N/A';
 
@@ -29,7 +34,7 @@ async function getTokenMetadataAndScore(mint) {
                 const ratio = ((liq / mc) * 100).toFixed(1);
                 ratioText = `${ratio}%`;
 
-                // تطبيق الشروط الذهبية للاقتناص (MC بين 5,000$ و 35,000$ وسيولة ممتازة)
+                // الشروط الذهبية (MC بين $5k و $35k ونسبة سيولة متوازنة)
                 if (mc >= 5000 && mc <= 35000 && ratio >= 12 && ratio <= 40) {
                     scoreTag = '🟢 <b>فرصة ذهبية (High Potential 10x-100x)</b>';
                 } else if (mc > 35000 && mc <= 100000) {
@@ -40,6 +45,7 @@ async function getTokenMetadataAndScore(mint) {
             }
 
             return {
+                ignore: false,
                 name: pair.baseToken.name || 'N/A',
                 symbol: pair.baseToken.symbol || 'N/A',
                 priceUsd: pair.priceUsd ? `$${parseFloat(pair.priceUsd).toFixed(6)}` : 'N/A',
@@ -104,6 +110,9 @@ app.post('/webhook', async (req, res) => {
             if (!targetMint) continue;
 
             const tokenData = await getTokenMetadataAndScore(targetMint);
+
+            // يتجاهل التنبيه إذا كانت السيولة ضعيفة وميتة
+            if (tokenData && tokenData.ignore) continue;
 
             let msg = `🎯 <b>ALPHA RADAR - تحليل الفرصة</b> 🎯\n\n`;
             
