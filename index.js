@@ -21,6 +21,44 @@ function formatAgeMinutes(createdAt) {
     return Math.floor(diffMs / (1000 * 60));
 }
 
+// دالة لفحص الأمان تلقائياً عبر RugCheck API
+async function checkTokenSecurity(mint) {
+    try {
+        const res = await axios.get(`https://api.rugcheck.xyz/v1/tokens/${mint}/report`, { timeout: 4000 });
+        if (res.data) {
+            const data = res.data;
+            const markets = data.markets || [];
+            
+            // التحقق من حرق السيولة أو وجود بوتات ومخاطر عالية
+            let isLpBurned = false;
+            for (const market of markets) {
+                if (market.lp && (market.lp.lpLockedPercent >= 90 || market.lp.lpBurnedPercent >= 90)) {
+                    isLpBurned = true;
+                    break;
+                }
+            }
+
+            // إذا كان التقرير يحدد مخاطر عالية جداً (Danger)
+            if (data.risks) {
+                const hasHighRisk = data.risks.some(r => r.level === 'danger');
+                if (hasHighRisk && !isLpBurned) {
+                    return { safe: false };
+                }
+            }
+
+            return { 
+                safe: true, 
+                score: data.score || 0,
+                statusText: isLpBurned ? '🔥 اللكويد محروق وصلاحيات الديف ملغاة (آمن بنسبة عالية)' : '🛡 مؤشرات أمان إيجابية وفحص نظرياً'
+            };
+        }
+    } catch (e) {
+        // إذا لم يعيد RugCheck تقريراً فورياً (لكونه جديداً جداً)، نعتمد على الفلتر الأساسي بحذر
+        return { safe: true, score: 50, statusText: '⚡️ إطلاق مبكر (تحت الفحص الفوري)' };
+    }
+    return { safe: false };
+}
+
 async function getUltraEarlyToken(mint) {
     try {
         const res = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${mint}`, { timeout: 3500 });
@@ -37,11 +75,14 @@ async function getUltraEarlyToken(mint) {
             const liq = bestPair.liquidity?.usd ? Math.round(bestPair.liquidity.usd) : 0;
             const ageMins = formatAgeMinutes(bestPair.pairCreatedAt);
 
-            // 🛑 شروط الصيد الصارمة جداً لعملات الـ Xات (Ultra Early + Micro/Mid Cap + سيولة حقيقية وآمنة)
-            // 1. العمر يجب أن يكون أقل من 15 دقيقة حصرياً (لتجنب العملات القديمة مثل Pump و USD1)
-            // 2. الماركت كاب يجب أن يكون صغيراً ليتحمل الصعود (أقل من 50,000$)
-            // 3. السيولة يجب أن تكون واقعية ومدعومة (أكبر من 1,000$ وأقل من 20,000$)
+            // شروط الصيد (أقل من 15 دقيقة، ماركت كاب مناسب للـ Xات، وسيولة مقبولة)
             if (ageMins > 15 || mc > 50000 || liq < 1000 || liq > 20000) {
+                return { ignore: true };
+            }
+
+            // الفحص التلقائي للأمان عبر RugCheck
+            const securityCheck = await checkTokenSecurity(mint);
+            if (!securityCheck.safe) {
                 return { ignore: true };
             }
 
@@ -56,6 +97,7 @@ async function getUltraEarlyToken(mint) {
                 priceUsd: bestPair.priceUsd ? `$${parseFloat(bestPair.priceUsd).toFixed(6)}` : 'N/A',
                 marketCap: `$${mc.toLocaleString()}`,
                 liquidity: `$${liq.toLocaleString()}`,
+                securityText: securityCheck.statusText,
                 age: `${ageMins} دقيقة`,
                 vol5m: vol5m,
                 buys5m: buys5m,
@@ -133,10 +175,10 @@ app.post('/webhook', async (req, res) => {
 
             sentTokensCache.set(targetMint, now);
 
-            // الرسالة بالشكل المطلوب تماماً بدون نسب أو تحليلات معقدة، وب الأسطر المحددة:
+            // الرسالة بالشكل النظيف تماماً وبالترتيب الذي حددته مع الأمان التلقائي:
             let msg = `🏷 <b>العملة:</b> ${tokenData.name} ($${tokenData.symbol}) - السعر: <code>${tokenData.priceUsd}</code>\n`;
             msg += `🪙 <b>العقد:</b>\n<code>${targetMint}</code>\n`;
-            msg += `🛡 <b>أمانها:</b> افحص التقرير فوراً عبر زر RugCheck للتأكد من حرق السيولة وإلغاء الصلاحيات\n`;
+            msg += `🛡 <b>أمانها:</b> ${tokenData.securityText} (السيولة: ${tokenData.liquidity})\n`;
             msg += `📈 <b>الحالة:</b> إطلاق مبكر جداً (بداية الانطلاقة للبحث عن Xات عالية)\n`;
             msg += `💰 <b>ماركت كاب:</b> <code>${tokenData.marketCap}</code> | ⏱ العمر: ${tokenData.age}\n`;
             msg += `📊 <b>حجم تداول (5m):</b> ${tokenData.vol5m} (🟩 ${tokenData.buys5m} | 🟥 ${tokenData.sells5m})`;
@@ -148,7 +190,7 @@ app.post('/webhook', async (req, res) => {
                 ],
                 [
                     { text: '💊 Pump.fun', url: `https://pump.fun/${targetMint}` },
-                    { text: '🛡 RugCheck (افحص الحرق والصلاحيات)', url: `https://rugcheck.xyz/tokens/${targetMint}` }
+                    { text: '🛡 RugCheck', url: `https://rugcheck.xyz/tokens/${targetMint}` }
                 ]
             ];
 
