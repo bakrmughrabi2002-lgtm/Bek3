@@ -13,6 +13,9 @@ const IGNORED_MINTS = [
     'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'  // USDT
 ];
 
+// ذاكرة مؤقتة لمنع تكرار إرسال نفس العملة خلال 10 دقائق
+const sentTokensCache = new Map();
+
 function formatAgeMinutes(createdAt) {
     if (!createdAt) return 99999;
     const diffMs = Date.now() - createdAt;
@@ -41,7 +44,6 @@ async function getTokenMetadataAndSecurityScore(mint) {
 
             const ratio = ((liq / mc) * 100);
 
-            // تحديد حالة المنحنى وقوة العملة بناءً على الماركت كاب والسيولة المتقدمة
             let curveStatus = 'نهاية منحنى صاعد بنسبة 70% (زخم قوي ومتماسك)';
             if (mc >= 30000 && mc <= 100000) {
                 curveStatus = 'نهاية منحنى متقدمة بنسبة 85% (عملة قوية وثابتة بالسوق)';
@@ -126,13 +128,26 @@ app.post('/webhook', async (req, res) => {
             if (extracted.length === 0) continue;
 
             const targetMint = extracted[0];
+
+            // التحقق مما إذا تم إرسال هذه العملة مؤخراً (خلال آخر 10 دقائق)
+            const now = Date.now();
+            if (sentTokensCache.has(targetMint)) {
+                const lastSentTime = sentTokensCache.get(targetMint);
+                if (now - lastSentTime < 10 * 60 * 1000) {
+                    continue; // تخطي الإرسال لأنها أرسلت قريبًا جداً
+                }
+            }
+
             const tokenData = await getTokenMetadataAndSecurityScore(targetMint);
 
             if (tokenData && tokenData.ignore) {
                 continue;
             }
 
-            // ترتيب الرسالة بالدقة المطلوبة
+            // تسجيل وقت الإرسال لتجنب التكرار
+            sentTokensCache.set(targetMint, now);
+
+            // ترتيب الرسالة بالدقة المطلوبة دون عناوين إضافية أو تقييم
             let msg = `🏷 <b>العملة:</b> ${tokenData.name} ($${tokenData.symbol}) - السعر: <code>${tokenData.priceUsd}</code>\n`;
             msg += `🪙 <b>العقد:</b>\n<code>${targetMint}</code>\n`;
             msg += `🛡 <b>أمانها:</b> ${tokenData.safety} (السيولة: ${tokenData.liquidity})\n`;
