@@ -21,15 +21,14 @@ function formatAgeMinutes(createdAt) {
     return Math.floor(diffMs / (1000 * 60));
 }
 
-// دالة لفحص الأمان تلقائياً عبر RugCheck API
-async function checkTokenSecurity(mint) {
+// فحص الأمان المتقدم للتأكد من حرق السيولة واستبعاد النصب
+async function verifyEliteSecurity(mint) {
     try {
         const res = await axios.get(`https://api.rugcheck.xyz/v1/tokens/${mint}/report`, { timeout: 4000 });
         if (res.data) {
             const data = res.data;
             const markets = data.markets || [];
             
-            // التحقق من حرق السيولة أو وجود بوتات ومخاطر عالية
             let isLpBurned = false;
             for (const market of markets) {
                 if (market.lp && (market.lp.lpLockedPercent >= 90 || market.lp.lpBurnedPercent >= 90)) {
@@ -38,28 +37,23 @@ async function checkTokenSecurity(mint) {
                 }
             }
 
-            // إذا كان التقرير يحدد مخاطر عالية جداً (Danger)
-            if (data.risks) {
-                const hasHighRisk = data.risks.some(r => r.level === 'danger');
-                if (hasHighRisk && !isLpBurned) {
-                    return { safe: false };
-                }
+            const hasDanger = data.risks && data.risks.some(r => r.level === 'danger');
+            if (hasDanger && !isLpBurned) {
+                return { elite: false };
             }
 
             return { 
-                safe: true, 
-                score: data.score || 0,
-                statusText: isLpBurned ? '🔥 اللكويد محروق وصلاحيات الديف ملغاة (آمن بنسبة عالية)' : '🛡 مؤشرات أمان إيجابية وفحص نظرياً'
+                elite: true, 
+                statusText: isLpBurned ? '🔥 اللكويد محروق تماماً وصلاحيات الديف ملغاة (نخبة آمنة)' : '💎 مؤشرات تداول واعدة وفحص نظري سليم'
             };
         }
     } catch (e) {
-        // إذا لم يعيد RugCheck تقريراً فورياً (لكونه جديداً جداً)، نعتمد على الفلتر الأساسي بحذر
-        return { safe: true, score: 50, statusText: '⚡️ إطلاق مبكر (تحت الفحص الفوري)' };
+        return { elite: false };
     }
-    return { safe: false };
+    return { elite: false };
 }
 
-async function getUltraEarlyToken(mint) {
+async function getEliteToken(mint) {
     try {
         const res = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${mint}`, { timeout: 3500 });
         if (res.data && res.data.pairs && res.data.pairs.length > 0) {
@@ -75,20 +69,23 @@ async function getUltraEarlyToken(mint) {
             const liq = bestPair.liquidity?.usd ? Math.round(bestPair.liquidity.usd) : 0;
             const ageMins = formatAgeMinutes(bestPair.pairCreatedAt);
 
-            // شروط الصيد (أقل من 15 دقيقة، ماركت كاب مناسب للـ Xات، وسيولة مقبولة)
-            if (ageMins > 15 || mc > 50000 || liq < 1000 || liq > 20000) {
-                return { ignore: true };
-            }
-
-            // الفحص التلقائي للأمان عبر RugCheck
-            const securityCheck = await checkTokenSecurity(mint);
-            if (!securityCheck.safe) {
+            // قوانين نخبة النخبة الصارمة
+            if (ageMins < 2 || ageMins > 12 || mc < 5000 || mc > 35000 || liq < 3000 || liq > 15000) {
                 return { ignore: true };
             }
 
             const buys5m = bestPair.txns?.m5?.buys || 0;
             const sells5m = bestPair.txns?.m5?.sells || 0;
-            const vol5m = bestPair.volume?.m5 ? `$${Math.round(bestPair.volume.m5).toLocaleString()}` : '$0';
+            const vol5m = bestPair.volume?.m5 ? Math.round(bestPair.volume.m5) : 0;
+
+            if (vol5m < 1000 || buys5m <= sells5m) {
+                return { ignore: true };
+            }
+
+            const securityCheck = await verifyEliteSecurity(mint);
+            if (!securityCheck.elite) {
+                return { ignore: true };
+            }
 
             return {
                 ignore: false,
@@ -99,7 +96,7 @@ async function getUltraEarlyToken(mint) {
                 liquidity: `$${liq.toLocaleString()}`,
                 securityText: securityCheck.statusText,
                 age: `${ageMins} دقيقة`,
-                vol5m: vol5m,
+                vol5m: `$${vol5m.toLocaleString()}`,
                 buys5m: buys5m,
                 sells5m: sells5m
             };
@@ -161,13 +158,10 @@ app.post('/webhook', async (req, res) => {
 
             const now = Date.now();
             if (sentTokensCache.has(targetMint)) {
-                const lastSentTime = sentTokensCache.get(targetMint);
-                if (now - lastSentTime < 15 * 60 * 1000) {
-                    continue;
-                }
+                continue;
             }
 
-            const tokenData = await getUltraEarlyToken(targetMint);
+            const tokenData = await getEliteToken(targetMint);
 
             if (tokenData && tokenData.ignore) {
                 continue;
@@ -175,11 +169,11 @@ app.post('/webhook', async (req, res) => {
 
             sentTokensCache.set(targetMint, now);
 
-            // الرسالة بالشكل النظيف تماماً وبالترتيب الذي حددته مع الأمان التلقائي:
-            let msg = `🏷 <b>العملة:</b> ${tokenData.name} ($${tokenData.symbol}) - السعر: <code>${tokenData.priceUsd}</code>\n`;
+            // الرسالة بالشكل النظيف وبالترتيب الدقيق الذي طلبته تماماً:
+            let msg = `💎 <b>نخبة الفرص (Elite Alpha):</b> ${tokenData.name} ($${tokenData.symbol}) - السعر: <code>${tokenData.priceUsd}</code>\n`;
             msg += `🪙 <b>العقد:</b>\n<code>${targetMint}</code>\n`;
             msg += `🛡 <b>أمانها:</b> ${tokenData.securityText} (السيولة: ${tokenData.liquidity})\n`;
-            msg += `📈 <b>الحالة:</b> إطلاق مبكر جداً (بداية الانطلاقة للبحث عن Xات عالية)\n`;
+            msg += `📈 <b>الحالة:</b> صيد مبكر جداً لنخبة النخبة (مستهدف Xات عالية)\n`;
             msg += `💰 <b>ماركت كاب:</b> <code>${tokenData.marketCap}</code> | ⏱ العمر: ${tokenData.age}\n`;
             msg += `📊 <b>حجم تداول (5m):</b> ${tokenData.vol5m} (🟩 ${tokenData.buys5m} | 🟥 ${tokenData.sells5m})`;
 
@@ -202,7 +196,7 @@ app.post('/webhook', async (req, res) => {
 });
 
 app.get('/', (req, res) => {
-    res.send('Engine is active!');
+    res.send('Elite Engine is active!');
 });
 
 const PORT = process.env.PORT || 3000;
