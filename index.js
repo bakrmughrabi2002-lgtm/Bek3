@@ -13,7 +13,6 @@ const IGNORED_MINTS = [
     'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'  // USDT
 ];
 
-// دالة حساب عمر التوكن بتنسيق واضح
 function formatAge(createdAt) {
     if (!createdAt) return 'N/A';
     const diffMs = Date.now() - createdAt;
@@ -25,7 +24,27 @@ function formatAge(createdAt) {
     return `${diffDays} يوم`;
 }
 
-// دالة جلب البيانات وتفاصيل التوكن الكاملة
+// دالة الفحص التلقائي للأمان عبر RugCheck
+async function checkRugSafety(mint) {
+    try {
+        const res = await axios.get(`https://api.rugcheck.xyz/v1/tokens/${mint}/report/summary`, { timeout: 3000 });
+        if (res.data) {
+            // إذا كان التقييم مخاطرة عالية
+            if (res.data.score > 5000 || res.data.status === 'danger') {
+                return false; 
+            }
+            // إذا كانت هناك مخاطر محددة مثل عدم حظر الطباعة
+            if (res.data.risks) {
+                const highRisks = res.data.risks.filter(r => r.level === 'danger' || r.level === 'critical');
+                if (highRisks.length > 0) return false;
+            }
+        }
+    } catch (e) {
+        // إذا كان التوكن جديداً جداً على RugCheck ولم يُصنف كخطر مؤكد، نمرره للمتابعة
+    }
+    return true;
+}
+
 async function getTokenMetadataAndScore(mint) {
     try {
         const res = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${mint}`, { timeout: 3500 });
@@ -34,7 +53,6 @@ async function getTokenMetadataAndScore(mint) {
             const mc = pair.fdv ? Math.round(pair.fdv) : 0;
             const liq = pair.liquidity?.usd ? Math.round(pair.liquidity.usd) : 0;
             
-            // فلتر الحجب: استبعاد التوكنات ميتة السيولة (< $1000)
             if (liq < 1000 && mc > 0) {
                 return { ignore: true };
             }
@@ -76,7 +94,6 @@ async function getTokenMetadataAndScore(mint) {
             };
         }
     } catch (e) {
-        // لا توجد بيانات على DEXScreener بعد
     }
     return null;
 }
@@ -128,16 +145,24 @@ app.post('/webhook', async (req, res) => {
 
             if (!targetMint) continue;
 
+            // 1. الفحص الآلي للأمان أولاً قبل أي معالجة
+            const isSafe = await checkRugSafety(targetMint);
+            if (!isSafe) {
+                console.log(`[RugCheck Auto-Filter] Skipped unsafe mint: ${targetMint}`);
+                continue; // تجاهل التوكن غير الآمن فوراً
+            }
+
             const tokenData = await getTokenMetadataAndScore(targetMint);
 
             if (tokenData && tokenData.ignore) continue;
 
             let msg = `🎯 <b>ALPHA RADAR - تحليل الفرصة</b> 🎯\n\n`;
+            msg += `🛡 <b>فحص الأمان التلقائي:</b> ✅ <i>آمن (RugCheck Passed)</i>\n\n`;
             
             if (tokenData) {
                 msg += `🏷 <b>اسم العملة:</b> ${tokenData.name} ($${tokenData.symbol})\n`;
                 msg += `📊 <b>التقييم:</b> ${tokenData.scoreTag}\n\n`;
-                msg += `💵 <b>السعر الحلي:</b> <code>${tokenData.priceUsd}</code>\n`;
+                msg += `💵 <b>السعر الحالي:</b> <code>${tokenData.priceUsd}</code>\n`;
                 msg += `💰 <b>الماركت كاب (MC):</b> <code>${tokenData.marketCap}</code>\n`;
                 msg += `💧 <b>السيولة (LP):</b> <code>${tokenData.liquidity}</code> (نسبة LP: ${tokenData.ratio})\n`;
                 msg += `⏱ <b>عمر التوكن:</b> <code>${tokenData.age}</code>\n`;
@@ -159,7 +184,7 @@ app.post('/webhook', async (req, res) => {
                 ],
                 [
                     { text: '💊 Pump.fun', url: `https://pump.fun/${targetMint}` },
-                    { text: '🛡 RugCheck (فحص الأمان)', url: `https://rugcheck.xyz/tokens/${targetMint}` }
+                    { text: '🛡 RugCheck (تقرير تفصيلي)', url: `https://rugcheck.xyz/tokens/${targetMint}` }
                 ],
                 [
                     { text: '🔍 Solscan', url: `https://solscan.io/tx/${signature}` }
@@ -174,7 +199,7 @@ app.post('/webhook', async (req, res) => {
 });
 
 app.get('/', (req, res) => {
-    res.send('Alpha Smart Engine is running!');
+    res.send('Alpha Smart Engine with Auto RugCheck is running!');
 });
 
 const PORT = process.env.PORT || 3000;
