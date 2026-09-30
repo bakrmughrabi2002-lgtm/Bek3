@@ -13,7 +13,6 @@ const IGNORED_MINTS = [
     'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'  // USDT
 ];
 
-// ذاكرة مؤقتة لمنع تكرار إرسال نفس العملة خلال 10 دقائق
 const sentTokensCache = new Map();
 
 function formatAgeMinutes(createdAt) {
@@ -22,7 +21,7 @@ function formatAgeMinutes(createdAt) {
     return Math.floor(diffMs / (1000 * 60));
 }
 
-async function getTokenMetadataAndSecurityScore(mint) {
+async function getUltraEarlyToken(mint) {
     try {
         const res = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${mint}`, { timeout: 3500 });
         if (res.data && res.data.pairs && res.data.pairs.length > 0) {
@@ -38,22 +37,13 @@ async function getTokenMetadataAndSecurityScore(mint) {
             const liq = bestPair.liquidity?.usd ? Math.round(bestPair.liquidity.usd) : 0;
             const ageMins = formatAgeMinutes(bestPair.pairCreatedAt);
 
-            if (liq < 1500 || mc === 0) {
+            // 🛑 شروط الصيد الصارمة جداً لعملات الـ Xات (Ultra Early + Micro/Mid Cap + سيولة حقيقية وآمنة)
+            // 1. العمر يجب أن يكون أقل من 15 دقيقة حصرياً (لتجنب العملات القديمة مثل Pump و USD1)
+            // 2. الماركت كاب يجب أن يكون صغيراً ليتحمل الصعود (أقل من 50,000$)
+            // 3. السيولة يجب أن تكون واقعية ومدعومة (أكبر من 1,000$ وأقل من 20,000$)
+            if (ageMins > 15 || mc > 50000 || liq < 1000 || liq > 20000) {
                 return { ignore: true };
             }
-
-            const ratio = ((liq / mc) * 100);
-
-            let curveStatus = 'نهاية منحنى صاعد بنسبة 70% (زخم قوي ومتماسك)';
-            if (mc >= 30000 && mc <= 100000) {
-                curveStatus = 'نهاية منحنى متقدمة بنسبة 85% (عملة قوية وثابتة بالسوق)';
-            } else if (mc > 100000) {
-                curveStatus = 'مرحلة متقدمة جداً / قرب الاكتمال بنسبة 90%+ (قوة وصلابة عالية)';
-            } else {
-                curveStatus = 'منتصف المنحنى بنسبة 60% (في طريقها للاكتمال بقوة)';
-            }
-
-            let safetyText = `آمنة بنسبة ممتازة | نسبة السيولة للـ MC: ${ratio.toFixed(1)}%`;
 
             const buys5m = bestPair.txns?.m5?.buys || 0;
             const sells5m = bestPair.txns?.m5?.sells || 0;
@@ -66,8 +56,6 @@ async function getTokenMetadataAndSecurityScore(mint) {
                 priceUsd: bestPair.priceUsd ? `$${parseFloat(bestPair.priceUsd).toFixed(6)}` : 'N/A',
                 marketCap: `$${mc.toLocaleString()}`,
                 liquidity: `$${liq.toLocaleString()}`,
-                safety: safetyText,
-                curveStatus: curveStatus,
                 age: `${ageMins} دقيقة`,
                 vol5m: vol5m,
                 buys5m: buys5m,
@@ -129,29 +117,27 @@ app.post('/webhook', async (req, res) => {
 
             const targetMint = extracted[0];
 
-            // التحقق مما إذا تم إرسال هذه العملة مؤخراً (خلال آخر 10 دقائق)
             const now = Date.now();
             if (sentTokensCache.has(targetMint)) {
                 const lastSentTime = sentTokensCache.get(targetMint);
-                if (now - lastSentTime < 10 * 60 * 1000) {
-                    continue; // تخطي الإرسال لأنها أرسلت قريبًا جداً
+                if (now - lastSentTime < 15 * 60 * 1000) {
+                    continue;
                 }
             }
 
-            const tokenData = await getTokenMetadataAndSecurityScore(targetMint);
+            const tokenData = await getUltraEarlyToken(targetMint);
 
             if (tokenData && tokenData.ignore) {
                 continue;
             }
 
-            // تسجيل وقت الإرسال لتجنب التكرار
             sentTokensCache.set(targetMint, now);
 
-            // ترتيب الرسالة بالدقة المطلوبة دون عناوين إضافية أو تقييم
+            // الرسالة بالشكل المطلوب تماماً بدون نسب أو تحليلات معقدة، وب الأسطر المحددة:
             let msg = `🏷 <b>العملة:</b> ${tokenData.name} ($${tokenData.symbol}) - السعر: <code>${tokenData.priceUsd}</code>\n`;
             msg += `🪙 <b>العقد:</b>\n<code>${targetMint}</code>\n`;
-            msg += `🛡 <b>أمانها:</b> ${tokenData.safety} (السيولة: ${tokenData.liquidity})\n`;
-            msg += `📈 <b>الحالة:</b> ${tokenData.curveStatus}\n`;
+            msg += `🛡 <b>أمانها:</b> افحص التقرير فوراً عبر زر RugCheck للتأكد من حرق السيولة وإلغاء الصلاحيات\n`;
+            msg += `📈 <b>الحالة:</b> إطلاق مبكر جداً (بداية الانطلاقة للبحث عن Xات عالية)\n`;
             msg += `💰 <b>ماركت كاب:</b> <code>${tokenData.marketCap}</code> | ⏱ العمر: ${tokenData.age}\n`;
             msg += `📊 <b>حجم تداول (5m):</b> ${tokenData.vol5m} (🟩 ${tokenData.buys5m} | 🟥 ${tokenData.sells5m})`;
 
@@ -162,7 +148,7 @@ app.post('/webhook', async (req, res) => {
                 ],
                 [
                     { text: '💊 Pump.fun', url: `https://pump.fun/${targetMint}` },
-                    { text: '🛡 RugCheck', url: `https://rugcheck.xyz/tokens/${targetMint}` }
+                    { text: '🛡 RugCheck (افحص الحرق والصلاحيات)', url: `https://rugcheck.xyz/tokens/${targetMint}` }
                 ]
             ];
 
