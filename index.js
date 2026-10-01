@@ -1,3 +1,4 @@
+const SOLANA_RPC = 'https://shared.us-east-1.getblock.io/37c04339fd954e9eb5783084d0233c25';
 const express = require('express');
 const axios = require('axios');
 const app = express();
